@@ -4,11 +4,11 @@ A natural language command line interface that lets you interact with your termi
 
 ## Features
 
-- 🗣️ **Natural Language Interface**: Type commands in plain English
-- 🤖 **Local LLM**: Powered by Qwen 2.5 Coder 7B via Ollama (100% offline)
-- 🔒 **Docker Sandbox**: Dangerous commands run in isolated containers
-- 💬 **Smart Conversations**: Asks clarifying questions when needed
-- ⚡ **Safety First**: Three-tier command classification (safe, moderate, dangerous)
+-  **Natural Language Interface**: Type commands in plain English
+-  **Local LLM**: Powered by Qwen 2.5 Coder 7B via Ollama (100% offline)
+-  **Docker Sandbox**: Dangerous commands run in isolated containers
+-  **Smart Conversations**: Asks clarifying questions when needed
+-  **Safety First**: Three-tier command classification (safe, moderate, dangerous)
 
 ## Prerequisites
 
