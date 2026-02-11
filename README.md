@@ -7,7 +7,7 @@ A natural language command line interface that lets you interact with your termi
 -  **Natural Language Interface**: Type commands in plain English
 -  **Local LLM**: Powered by Qwen 2.5 Coder 7B via Ollama (100% offline)
 -  **Docker Sandbox**: Dangerous commands run in isolated containers
--  **Smart Conversations**: Asks clarifying questions when needed
+-  **Smart Conversations**: Asks clarifying questions when needed (very rare)
 -  **Safety First**: Three-tier command classification (safe, moderate, dangerous)
 
 ## Prerequisites
@@ -90,4 +90,3 @@ jarvis-jr/
 
 ## License
 
-MIT
