@@ -1,16 +1,21 @@
 """
-Command executor that routes commands to host or Docker
+Command executor that routes commands with warning system
 """
 import subprocess
 import os
 from typing import Tuple
 from .command_analyzer import CommandAnalyzer, SafetyLevel
-from .docker_sandbox import DockerSandbox
+from .warning_system import WarningSystem
 from .context import ConversationContext
+import shlex
+import sys
 
 
 class CommandExecutor:
-    """Executes commands either on host or in Docker based on safety analysis"""
+    """Executes commands with warning system for dangerous operations"""
+    
+    # Interactive commands that require TTY and stdin/stdout passthrough
+    INTERACTIVE_COMMANDS = {"nano", "vim", "vi", "less", "more", "top", "htop", "man", "pico", "emacs"}
     
     def __init__(self, context: ConversationContext):
         """
@@ -21,17 +26,12 @@ class CommandExecutor:
         """
         self.context = context
         self.analyzer = CommandAnalyzer()
-        self.sandbox = None  # Lazy initialization
-    
-    def _get_sandbox(self) -> DockerSandbox:
-        """Get or create Docker sandbox instance"""
-        if self.sandbox is None:
-            self.sandbox = DockerSandbox()
-        return self.sandbox
+        self.warning_system = WarningSystem()
     
     def execute(self, command: str, auto_confirm: bool = False) -> Tuple[int, str, str, SafetyLevel]:
         """
-        Execute a command with appropriate safety measures
+        Execute a command with warning system for dangerous operations
+        All commands execute on the host system.
         
         Args:
             command: The bash command to execute
@@ -40,31 +40,43 @@ class CommandExecutor:
         Returns:
             Tuple of (exit_code, stdout, stderr, safety_level)
         """
+        # Check if this is an interactive command
+        try:
+            first_word = command.split()[0]
+        except IndexError:
+            first_word = ""
+        
+        is_interactive = first_word in self.INTERACTIVE_COMMANDS
+        
         # Analyze command safety
         safety_level, reason = self.analyzer.analyze(command)
         
-        # Check if confirmation needed
-        if self.analyzer.requires_confirmation(safety_level) and not auto_confirm:
-            confirmed = self._get_user_confirmation(command, reason)
+        # Show warning and get confirmation if needed
+        if self.warning_system.should_warn(safety_level.value) and not auto_confirm:
+            confirmed = self.warning_system.show_warning_and_confirm(command, reason, safety_level.value)
             if not confirmed:
                 return (1, "", "Command execution cancelled by user", safety_level)
-        
-        # Execute based on safety level
-        if self.analyzer.should_use_docker(safety_level):
-            # Run in Docker
-            exit_code, stdout, stderr = self._execute_in_docker(command)
         else:
-            # Run on host
+            # Show info for safe commands
+            if safety_level == SafetyLevel.SAFE:
+                self.warning_system.show_info_message(command, reason)
+        
+        # Execute on host - use interactive mode for TTY commands
+        if is_interactive:
+            exit_code = self._execute_interactive(command)
+            stdout, stderr = "", ""
+        else:
             exit_code, stdout, stderr = self._execute_on_host(command)
         
-        # Record execution in context
-        self.context.add_command_execution(command, stdout, exit_code)
+        # Update working directory if cd command was executed
+        if exit_code == 0:
+            self._update_working_directory_after_cd(command)
         
         return (exit_code, stdout, stderr, safety_level)
     
     def _execute_on_host(self, command: str) -> Tuple[int, str, str]:
         """
-        Execute command directly on host system
+        Execute command directly on host system with output capture
         
         Args:
             command: The bash command to execute
@@ -92,64 +104,88 @@ class CommandExecutor:
         except Exception as e:
             return (1, "", f"Error executing command: {str(e)}")
     
-    def _execute_in_docker(self, command: str) -> Tuple[int, str, str]:
+    def _execute_interactive(self, command: str) -> int:
         """
-        Execute command in Docker sandbox
+        Execute interactive command with direct TTY passthrough
+        User can interact with the command in real-time
         
         Args:
             command: The bash command to execute
             
         Returns:
-            Tuple of (exit_code, stdout, stderr)
+            Exit code from the command
         """
         try:
-            sandbox = self._get_sandbox()
-            
-            # Execute in sandbox with current working directory mounted
-            exit_code, stdout, stderr = sandbox.execute_command(
-                command=command,
-                working_dir=self.context.working_directory
+            # Run command with direct stdin/stdout/stderr passthrough
+            # No timeout for interactive commands
+            result = subprocess.run(
+                command,
+                shell=True,
+                cwd=self.context.working_directory
             )
+            return result.returncode
             
-            return (exit_code, stdout, stderr)
-            
+        except KeyboardInterrupt:
+            # User pressed Ctrl+C
+            return 130
+        except FileNotFoundError:
+            print(f"Error: Command not found: {command.split()[0] if command else 'unknown'}", file=sys.stderr)
+            return 127
         except Exception as e:
-            return (1, "", f"Docker execution error: {str(e)}")
+            print(f"Error executing command: {str(e)}", file=sys.stderr)
+            return 1
     
-    def _get_user_confirmation(self, command: str, reason: str) -> bool:
-        """
-        Ask user to confirm execution of dangerous command
-        
-        Args:
-            command: The command to confirm
-            reason: Reason why it's dangerous
-            
-        Returns:
-            True if user confirms, False otherwise
-        """
-        print(f"\n⚠️ WARNING: This command is potentially dangerous!")
-        print(f"Command: {command}")
-        print(f"Reason: {reason}")
-        print(f"It will run in an isolated Docker container.")
-        
-        while True:
-            response = input("\nDo you want to proceed? (yes/no): ").strip().lower()
-            if response in ['yes', 'y']:
-                return True
-            elif response in ['no', 'n']:
-                return False
-            else:
-                print("Please answer 'yes' or 'no'")
     
-    def is_docker_available(self) -> bool:
-        """Check if Docker is available for sandbox execution"""
+
+    def _update_working_directory_after_cd(self, command: str):
+        """
+        Update working directory if command was a cd command.
+        Handles quoted paths and spaces correctly.
+        """
         try:
-            sandbox = self._get_sandbox()
-            return sandbox.is_docker_available()
-        except Exception:
-            return False
-    
+            parts = shlex.split(command)
+        except ValueError:
+            # Malformed command (e.g., unclosed quotes)
+            return
+
+        if not parts:
+            return
+
+        # Handle sudo cd ...
+        if parts[0] == "sudo":
+            if len(parts) < 2:
+                return
+            base_cmd = parts[1]
+            args = parts[2:]
+        else:
+            base_cmd = parts[0]
+            args = parts[1:]
+
+        if base_cmd != "cd":
+            return
+
+        # If no argument: go to home directory
+        if not args:
+            new_dir = os.path.expanduser("~")
+        else:
+            cd_dir = args[0]
+
+            if cd_dir == "~":
+                new_dir = os.path.expanduser("~")
+            elif cd_dir == "-":
+                # Optional: implement previous directory tracking later
+                return
+            elif os.path.isabs(cd_dir):
+                new_dir = cd_dir
+            else:
+                new_dir = os.path.join(self.context.working_directory, cd_dir)
+
+        new_dir = os.path.normpath(new_dir)
+
+        # Update only if directory exists
+        if os.path.isdir(new_dir):
+            self.context.working_directory = new_dir
+
     def cleanup(self):
-        """Cleanup resources (Docker containers, etc.)"""
-        if self.sandbox:
-            self.sandbox.cleanup()
+        """Cleanup resources (minimal cleanup needed)"""
+        pass

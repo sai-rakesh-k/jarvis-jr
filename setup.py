@@ -8,7 +8,6 @@ setup(
     packages=find_packages(),
     install_requires=[
         "ollama>=0.1.0",
-        "docker>=7.0.0",
         "typer>=0.9.0",
         "rich>=13.0.0",
         "prompt-toolkit>=3.0.0",

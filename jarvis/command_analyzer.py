@@ -10,8 +10,8 @@ from .config import config
 class SafetyLevel(Enum):
     """Safety classification levels"""
     SAFE = "safe"           # Read-only, always run on host
-    MODERATE = "moderate"   # File modifications, run in Docker by default
-    DANGEROUS = "dangerous" # Destructive operations, require confirmation + Docker
+    MODERATE = "moderate"   # File modifications, requires confirmation
+    DANGEROUS = "dangerous" # Destructive operations, require explicit confirmation
 
 
 class CommandAnalyzer:
@@ -99,7 +99,7 @@ class CommandAnalyzer:
         if base_command in self.config.moderate_commands:
             return (
                 SafetyLevel.MODERATE,
-                "File modification command, will run in Docker sandbox"
+                "File modification command, requires user confirmation"
             )
 
         # =========================
@@ -107,7 +107,7 @@ class CommandAnalyzer:
         # =========================
         return (
             SafetyLevel.MODERATE,
-            "Unknown command, will run in Docker sandbox for safety"
+            "Unknown command, may require user confirmation"
         )
 
     
@@ -132,25 +132,6 @@ class CommandAnalyzer:
             return ""
         
         return parts[0]
-    
-    def should_use_docker(self, safety_level: SafetyLevel) -> bool:
-        """
-        Determine if command should run in Docker based on safety level
-        
-        Args:
-            safety_level: The safety level of the command
-            
-        Returns:
-            True if should run in Docker, False if can run on host
-        """
-        # Safe commands never use Docker
-        if safety_level == SafetyLevel.SAFE:
-            return False
-        # Optionally allow moderate commands on host for speed
-        if safety_level == SafetyLevel.MODERATE and self.config.run_moderate_on_host:
-            return False
-        # Default: Moderate and Dangerous use Docker
-        return True
     
     def requires_confirmation(self, safety_level: SafetyLevel) -> bool:
         """

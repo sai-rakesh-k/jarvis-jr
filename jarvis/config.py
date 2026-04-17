@@ -21,13 +21,11 @@ class Config(BaseModel):
     llm_num_ctx: int = 512
 
     # =========================
-    # Docker Settings
+    # Warning System Settings
     # =========================
-    docker_image: str = "jarvis-sandbox:latest"
-    docker_timeout: int = 300
-    docker_memory_limit: str = "1g"
-    docker_cpu_limit: float = 2.0
-    reuse_container: bool = True  # Reuse container for speed
+    # All commands run on host with warnings for dangerous operations
+    enable_dangerous_warnings: bool = True  # Show warnings for dangerous commands
+    require_dangerous_confirmation: bool = True  # Require user approval for dangerous commands
 
     # =========================
     # Safety Classification
@@ -47,7 +45,7 @@ class Config(BaseModel):
 
     # Commands that modify files/system (always sandboxed)
     moderate_commands: Set[str] = {
-        "sed", "awk", "gawk", "mawk",  # Text processing (can modify)
+        "sed", "awk", "gawk", "mawk", "zip" # Text processing (can modify)
         "touch", "mkdir", "rmdir",
         "cp", "mv", "ln",
         "wget", "curl",
@@ -55,7 +53,6 @@ class Config(BaseModel):
         "tar", "gzip", "unzip", "zip",
         "chmod", "chown",
         "tee", "xargs",
-        "clear"
     }
 
     # Stronger dangerous detection
@@ -103,8 +100,8 @@ class Config(BaseModel):
         r"\bwipefs\b",
     ]
 
-    # SECURITY: Never run modifying commands on host
-    run_moderate_on_host: bool = False
+    # SECURITY: All commands run on host - warnings for dangerous operations
+    run_moderate_on_host: bool = True
 
     # Output formatting
     simplify_output: bool = True
@@ -116,10 +113,6 @@ class Config(BaseModel):
     warning_color: str = "yellow"
     error_color: str = "red"
     success_color: str = "green"
-
-    # Logging
-    log_file: str = "~/.jarvis_history.log"
-    enable_logging: bool = True
 
     class Config:
         frozen = False

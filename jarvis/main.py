@@ -2,19 +2,16 @@
 Jarvis Jr - Natural Language Command Line Interface
 Main entry point and interactive CLI
 """
-import sys
 import os
 import re
 import typer
 import requests
-import docker
 from rich.console import Console
 from rich.panel import Panel
 from rich.prompt import Prompt
 from rich.markdown import Markdown
 from rich.live import Live
 from rich.spinner import Spinner
-from rich.text import Text
 from prompt_toolkit import prompt as pt_prompt
 from prompt_toolkit.history import InMemoryHistory
 from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
@@ -44,18 +41,8 @@ def ollama_available() -> bool:
         return False
 
 
-def docker_available() -> bool:
-    """Check Docker availability via SDK ping"""
-    try:
-        client = docker.from_env()
-        client.ping()
-        return True
-    except Exception:
-        return False
-
-
 def check_prerequisites():
-    """Check if Ollama and Docker are available"""
+    """Check if Ollama is available"""
     issues = []
 
     # Ollama check
@@ -65,23 +52,11 @@ def check_prerequisites():
         issues.append(f"❌ Ollama or {config.ollama_model} model not available")
         issues.append("   Install: https://ollama.ai")
         issues.append(f"   Then run: ollama pull {config.ollama_model}")
-
-    # Docker check
-    if docker_available():
-        console.print("✓ Docker available", style="green")
-    else:
-        issues.append("❌ Docker not available")
-        issues.append("   Install: https://docs.docker.com/get-docker/")
-        issues.append("   For WSL, ensure Docker Desktop is running")
-
+    
     if issues:
         console.print("\n[red]Prerequisites not met:[/red]")
         for issue in issues:
             console.print(f"  {issue}")
-
-        console.print(
-            "\n[yellow]Note: Safe commands (ls, cat, etc.) will still work without Docker[/yellow]"
-        )
 
         response = Prompt.ask("\nContinue anyway?", choices=["yes", "no"], default="no")
         if response == "no":
@@ -100,7 +75,7 @@ Welcome! I'm your natural language command line assistant.
 
 **How to use:**
 - Type commands in plain English
-- I'll translate them to bash commands and execute them safely
+- I will translate them to bash commands and execute them safely
 - Please give single command clearly at once for best results
 - By default every command assumes target location is current folder, unless you specify otherwise (e.g. "list python files in /home/user")
 - Type 'help' for more info, 'exit' to quit
@@ -115,8 +90,6 @@ def print_help():
 **Special commands:**
 - `help` - Show this help
 - `exit` or `quit` or `q` - Exit Jarvis Jr
-- `clear` - Clear conversation history
-- `!!` - Repeat last command
 
 **Quick shortcuts:**
 - `ls` / `dir` - List files
@@ -159,14 +132,18 @@ def interactive():
         try:
             console.print()
             # Use prompt_toolkit for history navigation (up/down arrows)
+            folder = os.path.basename(context.working_directory)
+
+            prompt_text = f"Jarvis:{folder} > "
+
             user_input = pt_prompt(
-                f"{config.prompt_symbol}",
+                prompt_text,
                 history=input_history,
                 auto_suggest=AutoSuggestFromHistory(),
             ).strip()
             if not user_input:
                 continue
-
+            
             # Handle special commands
             if user_input.lower() in ("exit", "quit", "q"):
                 console.print("\n[cyan]Goodbye! 👋[/cyan]")
@@ -177,18 +154,15 @@ def interactive():
                 continue
             
             if user_input.lower() == "clear":
-                context.clear_history()
-                llm.clear_context()
-                console.print("[green]Conversation history and context cleared[/green]")
+                console.print("[green]Context cleared[/green]")
                 continue
             
             # Quick shortcuts - bypass LLM for common commands
             quick_commands = {
-                "ls": "ls -la",
-                "dir": "ls -la", 
+                 "ls": "ls",
+                 "dir": "ls", 
                 "pwd": "pwd",
                 "..": "cd ..",
-                "!!": context.last_command if context.last_command else None,
             }
             
             if user_input.lower() in quick_commands:
@@ -236,44 +210,18 @@ def interactive():
                         new_dir = os.path.abspath(path_token)
 
                     if os.path.isdir(new_dir):
-                        context.working_directory = new_dir
+                        context.update_working_directory(new_dir)
                         console.print(f"[cyan]Working directory set to: {context.working_directory}[/cyan]\n")
                     else:
                         console.print(f"[yellow]Note: Path '{path_token}' not found; using current directory.[/yellow]")
                 except Exception:
                     console.print(f"[yellow]Note: Couldn't resolve path '{path_token}'; using current directory.[/yellow]")
             
-            # Prepare recent context for LLM
+            # Prepare recent context for LLM (working directory only)
             recent_context = context.get_recent_context()
 
-            # Auto-composition: if the previous assistant asked a clarifying question
-            # and the user's reply is a short path-like answer (e.g. "current folder", ".", "here", "output"),
-            # combine the original user intent with this short reply to form a full instruction.
-            previous_assistant = context.get_last_assistant_message()
-
-            composed_input = None
-            if previous_assistant and previous_assistant.strip().endswith('?'):
-                # Heuristic: short replies (<=4 words) or common path tokens
-                short_tokens = ['.', 'here', 'current', 'this', 'output', 'cwd', 'folder', 'directory']
-                words = user_input.strip().split()
-                lower = user_input.lower()
-                looks_like_path = any(tok in lower for tok in short_tokens) or lower.startswith('/') or lower.startswith('~')
-                if len(words) <= 4 and looks_like_path:
-                    # Find the user's previous message (the intent that prompted the question)
-                    prior_user = None
-                    for msg in reversed(context.get_full_history()):
-                        if msg.get('role') == 'user':
-                            prior_user = msg.get('content')
-                            break
-                    if prior_user:
-                        # Compose a new user input combining prior intent + clarified path
-                        composed_input = f"{prior_user} in {user_input.strip()}"
-
             # If we composed a new input, call the LLM with that; otherwise use the raw user input
-            call_input = composed_input if composed_input else user_input
-
-            # Record the raw user message in conversation history (we store the user's reply)
-            context.add_user_message(user_input)
+            call_input = user_input
 
             # Show spinner while waiting for LLM
             with Live(Spinner("dots", text="Thinking...", style="cyan"), console=console, transient=True):
@@ -286,21 +234,12 @@ def interactive():
                     console.print(f"[red]Error generating command: {str(e)}[/red]")
                     continue
 
-            # Capture the previous assistant message BEFORE recording the new response
-            previous_assistant = context.get_last_assistant_message()
-
             # Defensive sanitization: strip any echoed RECENT CONVERSATION HISTORY
             if isinstance(response, str) and "RECENT CONVERSATION HISTORY:" in response:
                 # Try remove bounded block ending with '---', else remove until end
                 response = re.sub(r'RECENT CONVERSATION HISTORY:.*?---\s*', '', response, flags=re.S).strip()
                 if "RECENT CONVERSATION HISTORY:" in response:
                     response = re.sub(r'RECENT CONVERSATION HISTORY:.*$', '', response, flags=re.S).strip()
-
-            # Record current assistant response and LLM context
-            context.add_assistant_message(response)
-
-            # Track in LLM context window for conversation continuity
-            llm.add_to_context(user_input, response)
 
             if not is_command:
                 console.print(f"[yellow]{config.assistant_symbol}[/yellow] {response}")
@@ -310,48 +249,51 @@ def interactive():
             # BEFORE analyzing for safety or executing
             command = llm._extract_command(response)
             
+            #  Block install/network commands (offline mode)
+            install_keywords = ["pip install", "apt install", "apt-get install", "npm install", "yarn add"]
+
+            if any(command.startswith(k) for k in install_keywords):
+                console.print(f"[yellow]{config.assistant_symbol} Suggestion (not executed):[/yellow] {command}")
+                console.print("[cyan]This is an installation command. Please run it manually (requires internet).[/cyan]")
+                continue
+
             if not command:
                 console.print(f"[yellow]{config.assistant_symbol}[/yellow] {response}")
                 continue
 
-            # Analyze the EXTRACTED command (not the raw response with markdown/explanation)
+            #  ADD THIS BLOCK HERE
+            if command.strip().startswith("sudo"):
+                console.print("[red]Sudo commands are not allowed.[/red]")
+                continue
+
+            # Analyze safety
             analyzer = CommandAnalyzer()
             safety, reason = analyzer.analyze(command)
-            uses_docker = analyzer.should_use_docker(safety)
 
-            # Print the extracted command before any confirmation prompt
+            # Print command
             console.print(f"[green]{config.assistant_symbol}[/green] {command}")
-
-            # If the PREVIOUS assistant message was a clarifying question, require explicit run confirmation
-            # only for non-SAFE commands. Safe commands skip this extra prompt.
-            if previous_assistant and previous_assistant.strip().endswith('?') and safety != SafetyLevel.SAFE:
-                confirm_run = Prompt.ask("Run this command?", choices=["yes", "no"], default="no")
-                if confirm_run != "yes":
-                    console.print("[yellow]Command cancelled.[/yellow]")
-                    continue
             
             if safety == SafetyLevel.DANGEROUS:
                 console.print(f"\n[bold red]⚠️  WARNING: Dangerous command![/bold red]")
                 console.print(f"[yellow]Reason: {reason}[/yellow]")
-                if uses_docker:
-                    console.print(f"[dim]Will run in isolated Docker container.[/dim]")
-                else:
-                    console.print(f"[dim]Docker not available — this would run on host. Proceed with caution.[/dim]")
                 confirm = Prompt.ask("Proceed?", choices=["yes", "no"], default="no")
                 if confirm != "yes":
                     console.print("[yellow]Command cancelled.[/yellow]")
                     continue
             
             # Show where command will run
-            if uses_docker:
-                console.print(f"[dim]🐳 Running in Docker sandbox...[/dim]")
-            else:
-                console.print(f"[dim]💻 Running on host...[/dim]")
+            console.print(f"[dim]💻 Running on host...[/dim]")
 
-            # Show spinner during command execution
-            with Live(Spinner("dots", text="Executing...", style="yellow"), console=console, transient=True):
+            interactive_cmds = {"nano", "vim", "vi", "less", "more", "top", "htop", "man", "pico", "emacs"}
+
+            first = command.split()[0]
+
+            if first in interactive_cmds:
+                console.print(f"[yellow]Running interactive command:[/yellow] {command}")
                 exit_code, stdout, stderr, safety = executor.execute(command, auto_confirm=True)
-
+            else:
+                with Live(Spinner("dots", text="Executing...", style="yellow"), console=console, transient=True):
+                    exit_code, stdout, stderr, safety = executor.execute(command, auto_confirm=True)
             console.print(
                 f"{format_safety_level(safety)} [dim]{'Success' if exit_code == 0 else 'Failed'}[/dim]"
             )
@@ -363,9 +305,6 @@ def interactive():
             elif stderr:
                 console.print("\n[bold red]Errors:[/bold red]")
                 console.print(stderr)
-            else:
-                console.print("\n[bold]Output:[/bold]")
-                console.print("nothing")
 
         except KeyboardInterrupt:
             console.print("\n[yellow]Interrupted. Type 'exit' to quit.[/yellow]")

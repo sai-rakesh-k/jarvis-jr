@@ -87,44 +87,6 @@ You should see `qwen2.5-coder:7b` in the list.
 
 ---
 
-## Step 5: Install Docker
-
-### Check if Docker is installed:
-```bash
-docker --version
-```
-
-### If not installed, install Docker:
-
-**Option A: Docker Desktop (Recommended for WSL)**
-1. Download from: https://www.docker.com/products/docker-desktop/
-2. Install Docker Desktop on Windows
-3. In Docker Desktop settings: Enable "Use WSL 2 based engine"
-4. In WSL, Docker will be automatically available
-
-**Option B: Docker in WSL directly**
-```bash
-# Install Docker
-curl -fsSL https://get.docker.com -o get-docker.sh
-sudo sh get-docker.sh
-
-# Start Docker
-sudo service docker start
-
-# Add your user to docker group (so you don't need sudo)
-sudo usermod -aG docker $USER
-
-# Log out and back in for group change to take effect
-exit
-# Then reopen WSL
-```
-
-### Verify Docker:
-```bash
-docker run hello-world
-```
-
----
 
 ## Step 6: Install Jarvis Jr
 
@@ -269,10 +231,6 @@ Goodbye! 👋
 ### Special Commands:
 - `help` - Show help
 - `exit` or `quit` - Exit Jarvis
-- `clear` - Clear conversation history
-- `history` - Show conversation history
-- `export output.txt` - Save conversation to file
-
 ---
 
 ## Troubleshooting

@@ -3,10 +3,7 @@ LLM handler for natural language to command translation
 """
 import ollama
 import re
-import os
-import json
-import time
-from typing import Optional, Tuple, Generator
+from typing import Optional, Tuple
 from .config import config
 
 
@@ -18,10 +15,6 @@ class LLMHandler:
         self.config = config
         self.model = config.ollama_model
         self.system_prompt = self._build_system_prompt()
-        self._command_cache = {}  # Cache for repeated queries
-        self._cache_size = 50     # Max cache entries
-        self.context_window = []  # Track conversation history for context
-        self.max_context_messages = 5  # Keep last 5 exchanges
         if warmup:
             self._warmup_model()
     
@@ -35,49 +28,57 @@ class LLMHandler:
             )
         except Exception:
             pass  # Silent fail - warmup is optional
-    
-    def add_to_context(self, user_input: str, assistant_output: str):
+
+    # --------------------------------------------------------------------------------------------------
+
+    def assemble_messages_for_test(self, user_input: str, context: Optional[str] = None):
         """
-        Add user input and assistant response to context window
-        
-        Args:
-            user_input: The user's natural language input
-            assistant_output: The LLM's response (command or question)
+        Assemble the messages that would be sent to the LLM for debugging/testing.
+
+        Returns the list of message dicts without calling the model.
         """
-        self.context_window.append({
-            "user": user_input,
-            "assistant": assistant_output
-        })
-        
-        # Keep only the last N exchanges to prevent context bloat
-        if len(self.context_window) > self.max_context_messages:
-            self.context_window = self.context_window[-self.max_context_messages:]
+        # Validate and sanitize input (same as generate_command)
+        if not user_input or not isinstance(user_input, str):
+            raise ValueError("Invalid input: please provide a non-empty string")
+
+        user_input_trunc = user_input
+        max_input_length = 500
+        if len(user_input_trunc) > max_input_length:
+            user_input_trunc = user_input_trunc[:max_input_length].strip()
+
+        messages = [{"role": "system", "content": self.system_prompt}]
+
+        # Include provided ConversationContext (working directory only)
+        if context:
+            messages.append({"role": "system", "content": context})
+
+        messages.append({"role": "user", "content": user_input_trunc})
+
+        return messages
     
-    def get_context_string(self) -> str:
+    def _validate_syntax(self, command: str) -> bool:
         """
-        Generate a string representation of recent context
-        
-        Returns:
-            Formatted context history for inclusion in prompts
+        Validate bash syntax without executing command
         """
-        if not self.context_window:
-            return ""
-        
-        context_parts = ["RECENT CONVERSATION HISTORY:"]
-        for i, exchange in enumerate(self.context_window, 1):
-            context_parts.append(f"User: {exchange['user']}")
-            context_parts.append(f"Assistant: {exchange['assistant']}")
-        
-        context_parts.append("---")
-        return "\n".join(context_parts)
-    
-    def clear_context(self):
-        """Clear the context window"""
-        self.context_window = []
-    
-        # Strict Command Detection
+        import subprocess
+        result = subprocess.run(
+            ["bash", "-n"],
+            input=command,
+            text=True,
+            capture_output=True
+        )
+        return result.returncode == 0
 
     def _is_command(self, response: str) -> bool:
+        """
+        Check if response is a valid bash command
+        
+        Args:
+            response: The response text to check
+            
+        Returns:
+            True if it's a valid command, False otherwise
+        """
         response = response.strip()
 
         if not response:
@@ -97,73 +98,155 @@ class LLMHandler:
         # Allowed shell commands
         allowed_commands = {
             "ls", "find", "grep", "sed", "awk", "cat", "mkdir",
-            "mv", "cp", "rm", "head", "tail", "wc",
-            "sort", "uniq", "du", "df", "pwd",
-            "whoami", "tree", "touch"
+            "mv", "cp", "rm", "rmdir", "head", "tail", "wc",
+            "sort", "uniq", "du", "df", "pwd", "git", "pip",
+            "whoami", "tree", "touch", "cd"
         }
 
         return first_word in allowed_commands
 
-    # --------------------
-
-    def assemble_messages_for_test(self, user_input: str, context: Optional[str] = None):
-        """
-        Assemble the messages that would be sent to the LLM for debugging/testing.
-
-        Returns the list of message dicts without calling the model.
-        """
-        # Validate and sanitize input (same as generate_command)
-        if not user_input or not isinstance(user_input, str):
-            raise ValueError("Invalid input: please provide a non-empty string")
-
-        user_input_trunc = user_input
-        max_input_length = 500
-        if len(user_input_trunc) > max_input_length:
-            user_input_trunc = user_input_trunc[:max_input_length].strip()
-
-        messages = [{"role": "system", "content": self.system_prompt}]
-
-        # Include provided ConversationContext (if any) first
-        if context:
-            messages.append({"role": "system", "content": context})
-
-        # Include internal LLM context window
-        if self.context_window:
-            messages.append({"role": "system", "content": self.get_context_string()})
-
-        messages.append({"role": "user", "content": user_input_trunc})
-
-        return messages
-    
-    def _validate_syntax(self, command: str) -> bool:
-        """
-        Validate bash syntax without executing command
-        """
-        import subprocess
-        result = subprocess.run(
-            ["bash", "-n"],
-            input=command,
-            text=True,
-            capture_output=True
-        )
-        return result.returncode == 0
-
     def _build_system_prompt(self) -> str:
         return """You are a bash command generator.
 
-    Return exactly ONE single-line bash command.
-    No explanations.
-    No markdown.
-    No comments.
-    No extra text.
+    OUTPUT FORMAT (STRICT):
+    - Output ONLY one single-line bash command.
+    - OR output ONLY one single-line clarification question ending with ?.
+    - No explanations, markdown, comments, or extra text.
+    - Prefer simple, direct commands if multiple options are possible.
 
-    If clarification is required, return exactly ONE single-line question ending with ?.
+    You ONLY handle:
+    - Files, Directories
+    - Directories
+    - File contents
+    - Searching
+    - Moving, copying, deleting,opening editing and similar files or folders
+    - File permissions
+    - Disk usage
+    - Process management
+    - CLI operations
+    - Install required packages 
 
-    If the user does not specify a path, assume the current directory (.).
+    If the request is NOT related to filesystem or CLI or Directory operations:
+    Return exactly:
+    echo "Error: Only filesystem and CLI operations are supported"
+
+
+    DEFAULTS:
+    - Path = current directory (.)
+    - Non-recursive operations unless explicitly requested.
+    - Hidden files/directories are excluded by default.
+
+    FORBIDDEN UNLESS EXPLICITLY REQUESTED:
+    - -a 
+    - -A
+    - -l
+
+    DIRECTORY RULES:
+    - change/go/transfer folder → cd <folder>
+    - use relative paths only
+    
+
+
+    LISTING RULES:
+    - Never include . or .. while listing directories unless explicitly requested.
+    - If user asks ONLY files → use find . -maxdepth 1 -type f
+    - If user asks ONLY directories/folders → find . -maxdepth 1 -type d ! -name ".*"
+    - If user asks for files use ls
+    - If user asks for directories/folders use find . -maxdepth 1 -type d ! -name ".*"
+    - If user asks for both files and directories/folders use ls
+    - Avoid broad wildcard deletion (e.g., rm *.txt) when exclusions are required.
+    - Avoid using xargs with sh -c unless absolutely required.
+    - Prefer direct loops or simple commands.
+    - Read the user request carefully 
+    If user request is ambiguous, output exactly one clarification question.
+    
+    
     """
 
 
-          
+
+    def _normalize_command(self, cmd: str, user_input: str) -> str:
+        """
+        Fix common LLM command mistakes before validation/execution.
+        """
+
+        user_lower = user_input.lower()
+
+        # ---- check if user explicitly wants hidden files ----
+        wants_hidden = any(word in user_lower for word in [
+            "hidden",
+            "include hidden",
+            "everything",
+            "all files including hidden"
+        ])
+
+        # ---- fix grep count (line count vs occurrence count) ----
+        # If command is: grep ... | wc -l
+        # ensure grep uses -o so occurrences are counted
+        if "grep" in cmd and "| wc -l" in cmd:
+
+            import re
+
+            # match grep flags like -i, -ri, etc.
+            match = re.search(r'\bgrep\s+(-[a-zA-Z]+)', cmd)
+
+            if match:
+                flags = match.group(1)
+
+                # add 'o' only if missing
+                if "o" not in flags:
+                    new_flags = flags + "o"
+                    cmd = cmd.replace(flags, new_flags, 1)
+            
+        # ---- split command into tokens ----
+        parts = cmd.split()
+        cleaned = []
+
+        if any(word in user_lower for word in ["total", "all", "entire"]):
+            parts
+
+        for p in parts:
+
+            # remove hidden flags unless requested
+            if not wants_hidden:
+                if p in ["-a", "-A", "-1A", "-A1", "-la", "-al"]:
+                    continue
+
+                # remove combined flags containing a/A
+                if p.startswith("-"):
+                    p = p.replace("A", "").replace("a", "")
+                    if p == "-":
+                        continue
+
+            cleaned.append(p)
+
+        cmd = " ".join(cleaned).strip()
+
+        # ---- normalize common bad ls patterns ----
+        if cmd.startswith("ls") and "*/" in cmd and "*" in cmd:
+            return "ls"
+
+        if cmd in ["ls .", "ls $(pwd)", "ls | cat", "ls -1 ."]:
+            return "ls"
+
+        # simplify useless "ls ." variants
+        if cmd.startswith("ls ") and cmd.endswith(" ."):
+            return "ls"
+        
+        # ---- fix common find typos ----
+        if "-mxdepth" in cmd:
+            cmd = cmd.replace("-mxdepth", "-maxdepth")
+        elif "-maxdept" in cmd:
+            cmd = cmd.replace("-maxdept", "-maxdepth")
+        elif "-maxdeph" in cmd:
+            cmd = cmd.replace("-maxdeph", "-maxdepth")
+        if "-nme" in cmd:
+            cmd = cmd.replace("-nme", "-name")
+        elif "-inme" in cmd:
+            cmd = cmd.replace("-inme", "-iname")
+
+        return cmd
+
     def generate_command(self, user_input: str, context: Optional[str] = None) -> Tuple[str, bool]:
         """
         Generate a bash command from natural language input
@@ -175,22 +258,90 @@ class LLMHandler:
         - Auto-repair retry (1 attempt)
         - Input validation and truncation
         """
-        
+
         # Validate and sanitize input
         if not user_input or not isinstance(user_input, str):
             return ("Invalid input: please provide a non-empty string", False)
-        
+
+        user_lower = user_input.lower()
+
+        # ---- GENERIC EXCEPT PARSER ----
+        m = re.search(
+            r"(delete|remove|count|how many).*(?:all )?"
+            r"(?P<ext>\.\w+|\w+\s*files?).*"
+            r"(?:except|exclude|excluding|apart from|but not|other than)\s+"
+            r"(?P<exclude>.+)",
+            user_lower
+        )
+
+        if m:
+            action = m.group(1)
+            ext = m.group("ext").strip()
+            exclude_raw = m.group("exclude")
+            
+            # ---- detect file type from user input ----
+            ext_map = {
+                "python": ".py",
+                "py": ".py",
+                "text": ".txt",
+                "txt": ".txt",
+                "json": ".json",
+                "java": ".java",
+                "cpp": ".cpp",
+                "c": ".c",
+            }
+
+            ext = None
+
+            for key, value in ext_map.items():
+                if key in user_lower:
+                    ext = value
+                    break
+
+            # fallback (if regex gave extension like .txt)
+            if not ext:
+                ext = m.group("ext").replace("files", "").replace("file", "").strip()
+                if not ext.startswith("."):
+                    ext = "." + ext
+
+
+            # ---- clean natural language fillers ----
+            exclude_raw = re.sub(
+                r"\b(and also|also|too)\b",
+                "",
+                exclude_raw
+            )
+
+            # ---- parse multiple excluded files ----
+            exclude_files = re.split(r",|and", exclude_raw)
+            exclude_files = [f.strip() for f in exclude_files if f.strip()]
+
+            # ---- build exclusion part ----
+            exclude_part = " ".join(
+                [f'! -name "{f}"' for f in exclude_files]
+            )
+
+            # ---- DELETE CASE ----
+            if action in ["delete", "remove"]:
+                cmd = (
+                    f'find . -maxdepth 1 -type f '
+                    f'-name "*{ext}" {exclude_part} -delete'
+                )
+                return (cmd, True)
+
+            # ---- COUNT CASE ----
+            if action in ["count", "how many"]:
+                cmd = (
+                    f'find . -maxdepth 1 -type f '
+                    f'-name "*{ext}" {exclude_part} | wc -l'
+                )
+                return (cmd, True)
+
+
         # Truncate very long inputs to prevent token overflow
         max_input_length = 500
         if len(user_input) > max_input_length:
             user_input = user_input[:max_input_length].strip()
-
-        # Check cache first (only for commands without context)
-        cache_key = user_input.lower().strip()
-        if cache_key and not context and cache_key in self._command_cache:
-            cached_result = self._command_cache[cache_key]
-            if cached_result and isinstance(cached_result, tuple) and len(cached_result) == 2:
-                return cached_result
 
         try:
             # -------------------------------
@@ -200,14 +351,11 @@ class LLMHandler:
                 {"role": "system", "content": self.system_prompt}
             ]
 
-            # Include provided context (ConversationContext) first as system guidance
+            # Include provided context (ConversationContext with working directory) first as system guidance
             if context:
                 messages.append({"role": "system", "content": context})
 
-            # Include LLMHandler context window if available (recent exchanges)
-            if self.context_window:
-                context_str = self.get_context_string()
-                messages.append({"role": "system", "content": context_str})
+            # No internal context window (conversation history disabled)
 
             messages.append({"role": "user", "content": user_input})
 
@@ -241,15 +389,23 @@ class LLMHandler:
                 if "\n" in response_text:
                     continue  # retry
 
-                # Question
+                # Question handling
                 if response_text.endswith("?"):
+
+                    # Fix cases like "pwd?" → "pwd"
+                    possible_cmd = response_text[:-1].strip()
+
+                    if self._is_command(possible_cmd):
+                        return (possible_cmd, True)
+
                     return (response_text, False)
+
 
                 command = self._extract_command(response_text)
 
                 if not command:
                     continue
-
+                command = self._normalize_command(command, user_input)
                 if self._validate_syntax(command):
                     return (command, True)
 
@@ -338,116 +494,4 @@ class LLMHandler:
             
         except (AttributeError, KeyError, TypeError, Exception):
             return False
-    
-    def explain_command(self, command: str) -> str:
-        """
-        Get an explanation of what a command does
-        
-        Args:
-            command: The bash command to explain
-            
-        Returns:
-            Explanation of the command
-        """
-        try:
-            messages = [
-                {
-                    "role": "system",
-                    "content": "You are a helpful assistant that explains bash commands. Provide a brief, clear explanation in 1-2 sentences."
-                },
-                {
-                    "role": "user",
-                    "content": f"Explain this bash command: {command}"
-                }
-            ]
-            
-            response = ollama.chat(
-                model=self.model,
-                messages=messages
-            )
-            
-            return response['message']['content'].strip()
-            
-        except Exception as e:
-            return f"Could not generate explanation: {str(e)}"
-    
-    def is_explanation_request(self, user_input: str) -> bool:
-        """
-        Fast pattern-based detection for explanation requests (no LLM call)
-        
-        Args:
-            user_input: What the user just said
-            
-        Returns:
-            True if asking for explanation, False if it's a new command
-        """
-        user_lower = user_input.lower().strip()
-        
-        # Exact matches for quick explanation requests
-        quick_explain = {'explain', 'explain this', 'what does this mean', 'what is this',
-                         'why', 'how', 'huh', 'what', '?', 'elaborate', 'clarify'}
-        if user_lower in quick_explain:
-            return True
-        
-        # Pattern matches for explanation phrases
-        explain_patterns = [
-            'explain', 'what does', 'what is', 'what are', 'tell me about',
-            'what do you mean', 'can you explain', 'i don\'t understand',
-            'break it down', 'simplify', 'in simple terms', 'what happened'
-        ]
-        
-        for pattern in explain_patterns:
-            if pattern in user_lower:
-                # Make sure it's asking about previous output, not a new command
-                # e.g., "explain git" is a new command, "explain this" is about previous
-                new_command_indicators = ['file', 'directory', 'folder', 'create', 'delete',
-                                          'list', 'show', 'find', 'search', 'run']
-                if not any(ind in user_lower for ind in new_command_indicators):
-                    return True
-        
-        return False
-    
-    def explain_output(self, user_request: str, command: str, output: str) -> str:
-        """
-        Explain command output in plain English
-        
-        Args:
-            user_request: What the user originally asked
-            command: The command that was run
-            output: The command output
-            
-        Returns:
-            Human-readable explanation
-        """
-        try:
-            # Limit output to first 500 chars to save tokens
-            limited_output = output[:500] + ("..." if len(output) > 500 else "")
-            
-            messages = [
-                {
-                    "role": "system",
-                    "content": "You are a helpful assistant. Summarize command output in 1-2 simple sentences that a non-technical user can understand. Focus on what the user asked for."
-                },
-                {
-                    "role": "user",
-                    "content": f"User asked: '{user_request}'\nCommand run: {command}\nOutput:\n{limited_output}\n\nExplain what this output means in simple terms:"
-                }
-            ]
-            
-            response = ollama.chat(
-                model=self.model,
-                messages=messages,
-                options={
-                    "num_predict": 100,  # Reduced from 150
-                    "temperature": 0.05, # Reduced from 0.1
-                    "top_k": 5,          # Reduced from 10
-                    "top_p": 0.9,        # Add top_p
-                    "num_ctx": 512,      # Reduced from 2048
-                    "num_gpu": 1
-                }
-            )
-            
-            return response['message']['content'].strip()
-            
-        except Exception:
-            return ""  # Silently fail - explanation is optional
+  
