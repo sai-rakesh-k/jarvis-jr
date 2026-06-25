@@ -103,7 +103,7 @@ class CommandAnalyzer:
             )
 
         # =========================
-        # 6️⃣ Default
+        # 6 Default
         # =========================
         return (
             SafetyLevel.MODERATE,

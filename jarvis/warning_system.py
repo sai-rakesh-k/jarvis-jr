@@ -1,6 +1,5 @@
 """
 Warning system for dangerous command execution with user confirmation
-Replaces Docker sandbox with simple permission-based execution model
 """
 
 

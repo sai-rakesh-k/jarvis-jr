@@ -468,6 +468,44 @@ class LLMHandler:
 
         return response.strip()
     
+    def analyze_error (self,command:str,stderr:str)->str:
+        messages = [
+            {
+                "role": "system",
+                "content": """
+    You are a troubleshooting assistant.
+
+    Explain:
+    1. Why the error occurred.
+    2. Possible causes.
+    3. What the user should do.
+
+    Do NOT provide installation commands.
+    Do NOT execute anything.
+    Keep the answer concise.
+    """
+            },
+            {
+                "role": "user",
+                "content": f"""
+    Command:
+    {command}
+
+    Error:
+    {stderr}
+    """
+            }
+        ]
+        response=ollama.chat(
+            model=self.model,
+            messages=messages,
+            options={
+                "temperature": 0.1,
+                "num_predict": 120,
+            }
+        )
+        return response["message"]["content"].strip()
+    
     def is_ollama_available(self) -> bool:
         """Check if Ollama is available and the model is installed"""
         try:

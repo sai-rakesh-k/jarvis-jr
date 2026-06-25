@@ -112,7 +112,7 @@ def format_safety_level(safety_level: SafetyLevel) -> str:
 # ---------- CLI COMMANDS ----------
 
 @app.command()
-def interactive():
+def start():
     """Start interactive Jarvis Jr session"""
     check_prerequisites()
     print_welcome()
@@ -170,6 +170,7 @@ def interactive():
                 if cmd:
                     console.print(f"[green]{config.assistant_symbol}[/green] {cmd}")
                     exit_code, stdout, stderr, safety = executor.execute(cmd)
+                    
                     if stdout:
                         console.print(stdout)
                     if stderr:
@@ -299,12 +300,46 @@ def interactive():
             )
 
             # Show output or explicit 'nothing' when there's no stdout/stderr
+            console.print(
+                f"{format_safety_level(safety)} "
+                f"[dim]{'Success' if exit_code == 0 else 'Failed'}[/dim]"
+            )
+
             if stdout:
                 console.print("\n[bold]Output:[/bold]")
                 console.print(stdout)
-            elif stderr:
+
+            if stderr:
                 console.print("\n[bold red]Errors:[/bold red]")
                 console.print(stderr)
+
+                important_errors = [
+                    "ModuleNotFoundError",
+                    "ImportError",
+                    "PermissionError",
+                    "FileNotFoundError",
+                ]
+
+                if any(err in stderr for err in important_errors):
+
+                    with Live(
+                        Spinner(
+                            "dots",
+                            text="Analyzing error...",
+                            style="cyan"
+                        ),
+                        console=console,
+                        transient=True
+                    ):
+                        explanation = llm.analyze_error(
+                            command,
+                            stderr
+                        )
+
+                    console.print(
+                        "\n[cyan]Troubleshooting:[/cyan]"
+                    )
+                    console.print(explanation)
 
         except KeyboardInterrupt:
             console.print("\n[yellow]Interrupted. Type 'exit' to quit.[/yellow]")

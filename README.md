@@ -1,91 +1,66 @@
 # Jarvis Jr
 
-A natural language command line interface that lets you interact with your terminal using plain English instead of memorizing bash commands.
+A small CLI that translates natural-language instructions to shell commands and executes them with safety checks. Intended to be used with a local LLM (optional) and can be extended, but this repository does not include Docker-based sandboxing.
 
 ## Features
 
--  **Natural Language Interface**: Enter the task to be executed in plain English
--  **Local LLM**: Powered by Qwen 2.5 Coder 7B via Ollama (100% offline)
--  **Docker Sandbox**: Dangerous commands run in isolated containers
--  **Safety First**: Three-tier command classification (safe, moderate, dangerous)
+- **Natural Language CLI**: Convert plain-English requests to shell commands.
+- **Safety Analysis**: Classifies commands before execution (safe/moderate/dangerous).
+- **Pluggable LLM Backend**: Integration points for local LLMs (e.g., Ollama).
+- **Conversation Context**: Maintains session state across interactions.
 
 ## Prerequisites
 
-1. **Python 3.8+**
-2. **Docker** (for sandboxing)
-3. **Ollama** with Qwen 2.5 Coder 7B model
-4. **WSL** (if on Windows)
+1. Python 3.8+
+2. (Optional) Ollama and a local model if you want fully offline LLM inference
 
 ## Installation
 
-### 1. Install Ollama and download the model
+Install dependencies and the package in editable mode:
 
 ```bash
-# Install Ollama (visit https://ollama.ai)
-curl -fsSL https://ollama.ai/install.sh | sh
-
-# Pull Qwen 2.5 Coder 7B
-ollama pull qwen2.5-coder:7b
-```
-
-### 2. Install Docker
-
-Follow instructions at https://docs.docker.com/get-docker/
-
-### 3. Install Jarvis Jr
-
-```bash
-cd jarvis-jr
+pip install -r requirements.txt
 pip install -e .
 ```
 
+The package exposes a console script called `jarvis` via `setup.py`.
+
 ## Usage
 
-Simply run:
+After installation run:
 
 ```bash
 jarvis
 ```
 
-Then type your requests in plain English:
+Or run the app directly with Python:
 
-```
-You: list all python files in current directory
-You: create a backup of config.json
-You: find all files larger than 100MB
-You: delete all .tmp files
+```bash
+python -m jarvis.main
 ```
 
-## How It Works
+Follow the interactive prompts and type requests in plain English.
 
-1. You type a command in natural language
-2. Qwen 2.5 Coder translates it to bash command
-3. Safety analyzer checks if command is dangerous
-4. Safe commands run directly; risky ones run in Docker
-5. You see the output and can continue the conversation
+## Repository Layout
 
-## Safety Features
+Top-level files and important modules:
 
-- **Safe commands**: Run directly (ls, cat, grep, pwd, etc.)
-- **Moderate commands**: Run in Docker with warning (mkdir, touch, wget, etc.)
-- **Dangerous commands**: Require confirmation + Docker isolation (rm -rf, dd, etc.)
+- `setup.py` — package metadata and `jarvis` console entry point
+- `requirements.txt` — Python dependencies
+- `README.md` — this file
+- `jarvis/` — main package
+	- `main.py` — CLI entry point (exports `app`)
+	- `llm_handler.py` — LLM integration helper
+	- `command_analyzer.py` — command classification / safety logic
+	- `executor.py` — executes commands
+	- `context.py` — conversation/session state
+	- `config.py` — configuration and defaults
+	- `warning_system.py` — user warnings and confirmations
+- `tests/` — test package (minimal)
 
-## Project Structure
+## Notes & Next Steps
 
-```
-jarvis-jr/
-├── jarvis/              # Main package
-│   ├── main.py          # CLI entry point
-│   ├── llm_handler.py   # Ollama integration
-│   ├── command_analyzer.py  # Safety classification
-│   ├── docker_sandbox.py    # Docker container management
-│   ├── executor.py      # Command execution
-│   ├── context.py       # Conversation state
-│   └── config.py        # Configuration
-├── tests/               # Tests
-├── Dockerfile           # Sandbox container
-└── requirements.txt     # Dependencies
-```
-
-## License
+- Configure environment variables via `.env` or `config.py` before running an LLM backend.
+- To enable offline LLM usage, install and configure Ollama and pull a supported model.
+- Write additional tests under `tests/` to cover critical flows.
 
